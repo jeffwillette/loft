@@ -76,14 +76,14 @@ _OUTPUT_PATH = flags.DEFINE_string(
 _MODEL_URL_OR_NAME = flags.DEFINE_enum(
     "model_url_or_name",
     "gemini-1.5-flash-002",
-    models.GeminiModel,
+    models.SupportedModels,
     "Evergreen model URL or API-based model name.",
 )
 _PROJECT_ID = flags.DEFINE_string(
     "project_id",
     None,
     "Project ID of Google Cloud Project.",
-    required=True,
+    required=False,
 )
 _CONTEXT_LENGTH = flags.DEFINE_enum(
     "context_length",
@@ -120,12 +120,12 @@ PromptRegistry = prompts.PromptRegistry
 
 
 def get_num_tokens(text_input: str) -> int:
-  # Simple tokenization for the estimated number of tokens.
-  return len(text_input.strip().split(" "))
+    # Simple tokenization for the estimated number of tokens.
+    return len(text_input.strip().split(" "))
 
 
 def _check_multiturn_prompt(prefix: str) -> bool:
-  return "topiocqa" in prefix.lower() or "sparc" in prefix.lower()
+    return "topiocqa" in prefix.lower() or "sparc" in prefix.lower()
 
 
 def _run_one_example(
@@ -133,121 +133,121 @@ def _run_one_example(
     model: models.Model,
     finished_lines: Dict[str, Any],
 ) -> Dict[str, Any] | None:
-  """Runs one example and returns the output."""
-  try:
-    return utils.run_one_example(example, model, finished_lines)
-  except Exception as exception:  # pylint: disable=broad-exception-caught
-    print(exception)
-    output_path = f"{_OUTPUT_PATH.value}.failed_prompt.{example.qid}"
-    print(f"Logging failing prompt to {output_path}")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    if _LOG_FAILING_PROMPTS.value:
-      with open(output_path, "wb") as f:
-        for chunk in example.all_chunks:
-          f.write(chunk.data)
-        f.flush()
-    return None
+    """Runs one example and returns the output."""
+    try:
+        return utils.run_one_example(example, model, finished_lines)
+    except Exception as exception:  # pylint: disable=broad-exception-caught
+        print(exception)
+        output_path = f"{_OUTPUT_PATH.value}.failed_prompt.{example.qid}"
+        print(f"Logging failing prompt to {output_path}")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if _LOG_FAILING_PROMPTS.value:
+            with open(output_path, "wb") as f:
+                for chunk in example.all_chunks:
+                    f.write(chunk.data)
+                f.flush()
+        return None
 
 
 def main(argv: Sequence[str]) -> None:
-  del argv
-  prompt_name = os.path.splitext(os.path.basename(_PROMPT_PREFIX_PATH.value))[0]
-  with open(_PROMPT_PREFIX_PATH.value, "r") as f:
-    prefix = f.read()
-    PromptRegistry.add(
-        name=prompt_name,
-        data_dir=_DATA_DIR.value,
-        split=_SPLIT.value,
-        prefix=prefix,
-        is_multi_turn=True if _check_multiturn_prompt(prompt_name) else False,
+    del argv
+    prompt_name = os.path.splitext(os.path.basename(_PROMPT_PREFIX_PATH.value))[0]
+    with open(_PROMPT_PREFIX_PATH.value, "r") as f:
+        prefix = f.read()
+        PromptRegistry.add(
+            name=prompt_name,
+            data_dir=_DATA_DIR.value,
+            split=_SPLIT.value,
+            prefix=prefix,
+            is_multi_turn=True if _check_multiturn_prompt(prompt_name) else False,
+        )
+
+    pid_mapper = {
+        str(idx): pid
+        for idx, pid in enumerate(
+            utils.load_data_from_file(
+                data_dir=_DATA_DIR.value,
+                split=_SPLIT.value,
+            ).corpus
+        )
+    }
+
+    model = models.get_model(
+        model_url_or_name=_MODEL_URL_OR_NAME.value,
+        project_id=_PROJECT_ID.value,
+        pid_mapper=pid_mapper,
     )
 
-  pid_mapper = {
-      str(idx): pid
-      for idx, pid in enumerate(
-          utils.load_data_from_file(
-              data_dir=_DATA_DIR.value,
-              split=_SPLIT.value,
-          ).corpus
-      )
-  }
+    finished_lines = {}
+    if os.path.exists(_OUTPUT_PATH.value) and not _OVERWRITE.value:
+        with open(_OUTPUT_PATH.value) as f:
+            for l in f:
+                l = json.loads(l)
+                finished_lines[l["qid"]] = l
+    else:
+        os.makedirs(os.path.dirname(_OUTPUT_PATH.value), exist_ok=True)
+    print(f"Found {len(finished_lines)} finished lines.")
 
-  model = models.get_model(
-      model_url_or_name=_MODEL_URL_OR_NAME.value,
-      project_id=_PROJECT_ID.value,
-      pid_mapper=pid_mapper,
-  )
-
-  finished_lines = {}
-  if os.path.exists(_OUTPUT_PATH.value) and not _OVERWRITE.value:
-    with open(_OUTPUT_PATH.value) as f:
-      for l in f:
-        l = json.loads(l)
-        finished_lines[l["qid"]] = l
-  else:
-    os.makedirs(os.path.dirname(_OUTPUT_PATH.value), exist_ok=True)
-  print(f"Found {len(finished_lines)} finished lines.")
-
-  # Log the configuration that was used. This is nice for knowing what exact
-  # command was to run when you have to look at the results months after an
-  # experiment is run (e.g. during rebuttal).
-  utils.save_run_metadata(
-      flags.FLAGS.flags_by_module_dict(), output_path_prefix=_OUTPUT_PATH.value
-  )
-
-  # Load the lines for inference and the one-shot prompt, then runs inference.
-  examples = PromptRegistry.get_examples(name=prompt_name)
-  qid2example = {ex.qid: ex for ex in examples}
-
-  for ex in qid2example.values():
-    # TODO(jinhyuklee): Implement tokenization for non-text content chunks.
-    if not all(chunk.mime_type == MimeType.TEXT for chunk in ex.context_chunks):
-      continue
-    num_tokens = get_num_tokens(
-        "\n".join(chunk.data.decode("utf-8") for chunk in ex.all_chunks)
+    # Log the configuration that was used. This is nice for knowing what exact
+    # command was to run when you have to look at the results months after an
+    # experiment is run (e.g. during rebuttal).
+    utils.save_run_metadata(
+        flags.FLAGS.flags_by_module_dict(), output_path_prefix=_OUTPUT_PATH.value
     )
-    if num_tokens > CONTEXT_LENGTH_TO_NUM_TOKENS[_CONTEXT_LENGTH.value]:
-      raise ValueError(
-          f"qid={ex.qid} has {num_tokens} tokens in its prompt, which is more"
-          f" than the context length of {_CONTEXT_LENGTH.value}"
-      )
 
-  # Caching and saving one prompt to disk.
-  print("Starting saving one prompt to disk...")
-  indexing_example = list(qid2example.values())[0]
-  prompt_path = f"{_OUTPUT_PATH.value}.prompt_first_query_example"
-  utils.save_content_chunks(indexing_example.all_chunks, prompt_path)
-  print(f"Finished saving one prompt to disk in {prompt_path}.txt")
+    # Load the lines for inference and the one-shot prompt, then runs inference.
+    examples = PromptRegistry.get_examples(name=prompt_name)
+    qid2example = {ex.qid: ex for ex in examples}
 
-  if _CACHE_FIRST_INPUT.value:
-    try:
-      print("Starting caching.")
-      # Do prefix cache by running the inference once.
-      model_output = model.infer(
-          list(indexing_example.all_chunks),
-      )
-      print("Finished caching. Model output:", model_output)
-    except Exception as exception:  # pylint: disable=broad-exception-caught
-      print(exception)
-      print("Failed to cache; continuing inference without caching...")
+    for ex in qid2example.values():
+        # TODO(jinhyuklee): Implement tokenization for non-text content chunks.
+        if not all(chunk.mime_type == MimeType.TEXT for chunk in ex.context_chunks):
+            continue
+        num_tokens = get_num_tokens(
+            "\n".join(chunk.data.decode("utf-8") for chunk in ex.all_chunks)
+        )
+        if num_tokens > CONTEXT_LENGTH_TO_NUM_TOKENS[_CONTEXT_LENGTH.value]:
+            raise ValueError(
+                f"qid={ex.qid} has {num_tokens} tokens in its prompt, which is more"
+                f" than the context length of {_CONTEXT_LENGTH.value}"
+            )
 
-  with open(_OUTPUT_PATH.value, "w", encoding="utf-8") as f:
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=_MAX_WORKERS.value
-    ) as executor:
-      eval_futures = executor.map(
-          functools.partial(
-              _run_one_example, model=model, finished_lines=finished_lines
-          ),
-          qid2example.values(),
-      )
-      for output in tqdm.tqdm(eval_futures, total=len(qid2example)):
-        if output:
-          f.write(json.dumps(output, ensure_ascii=False) + "\n")
-          f.flush()
+    # Caching and saving one prompt to disk.
+    print("Starting saving one prompt to disk...")
+    indexing_example = list(qid2example.values())[0]
+    prompt_path = f"{_OUTPUT_PATH.value}.prompt_first_query_example"
+    utils.save_content_chunks(indexing_example.all_chunks, prompt_path)
+    print(f"Finished saving one prompt to disk in {prompt_path}.txt")
 
-    print(f"Wrote results to {_OUTPUT_PATH.value}")
+    if _CACHE_FIRST_INPUT.value:
+        try:
+            print("Starting caching.")
+            # Do prefix cache by running the inference once.
+            model_output = model.infer(
+                list(indexing_example.all_chunks),
+            )
+            print("Finished caching. Model output:", model_output)
+        except Exception as exception:  # pylint: disable=broad-exception-caught
+            print(exception)
+            print("Failed to cache; continuing inference without caching...")
+
+    with open(_OUTPUT_PATH.value, "w", encoding="utf-8") as f:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=_MAX_WORKERS.value
+        ) as executor:
+            eval_futures = executor.map(
+                functools.partial(
+                    _run_one_example, model=model, finished_lines=finished_lines
+                ),
+                qid2example.values(),
+            )
+            for output in tqdm.tqdm(eval_futures, total=len(qid2example)):
+                if output:
+                    f.write(json.dumps(output, ensure_ascii=False) + "\n")
+                    f.flush()
+
+        print(f"Wrote results to {_OUTPUT_PATH.value}")
 
 
 if __name__ == "__main__":
-  app.run(main)
+    app.run(main)
