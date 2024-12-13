@@ -137,19 +137,22 @@ class HFAiModel(Model):
         additional_args = {}
         past_key_values = OffloadedCache()
 
-        print(f"{seq_len=}")
-        _output = self.model.generate(
-            inputs=inputs.cuda(),
-            past_key_values=past_key_values,
-            max_new_tokens=self.args.max_tokens,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=self.tokenizer.pad_token_id,
-            **additional_args,
-        )
-        output: str = self.tokenizer.decode(
-            _output[0][seq_len:].data.cpu(),
-            skip_special_tokens=True,
-        )
+        with torch.no_grad():
+            inputs = inputs.cuda()
+
+            print(f"after putting inputs on cuda: {seq_len=}")
+            _output = self.model.generate(
+                inputs=inputs,
+                past_key_values=past_key_values,
+                max_new_tokens=self.args.max_tokens,
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id,
+                **additional_args,
+            )
+            output: str = self.tokenizer.decode(
+                _output[0][seq_len:].data.cpu(),
+                skip_special_tokens=True,
+            )
 
         print(output)
 
